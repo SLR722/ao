@@ -21,6 +21,8 @@ if TORCH_VERSION_AFTER_2_4:
 
 from torchao.prototype.mx_formats.constants import (
     DTYPE_FP4,
+    DTYPE_FP4_E2M1,
+    DTYPE_FP4_E3M0,
     DTYPE_FP6_E2M3,
     DTYPE_FP6_E3M2,
     E8M0_EXPONENT_BIAS,
@@ -30,6 +32,10 @@ from torchao.prototype.mx_formats.constants import (
     F4_E2M1_MAX,
     F4_E2M1_MAX_INT,
     F4_E2M1_MIN_NORMAL,
+    F4_E3M0_EXP_BIAS,
+    F4_E3M0_MAX,
+    F4_E3M0_MAX_INT,
+    F4_E3M0_MIN_NORMAL,
     F6_E2M3_EXP_BIAS,
     F6_E2M3_MAX,
     F6_E2M3_MAX_INT,
@@ -53,10 +59,11 @@ def get_bits(x: torch.Tensor) -> str:
 
 EBITS_F32, MBITS_F32 = 8, 23
 EBITS_F4_E2M1, MBITS_F4_E2M1 = 2, 1
+EBITS_F4_E3M0, MBITS_F4_E3M0 = 3, 0
 EBITS_F6_E2M3, MBITS_F6_E2M3 = 2, 3
 EBITS_F6_E3M2, MBITS_F6_E3M2 = 3, 2
 
-DENORM_F32TOF4_EXP = (
+DENORM_F32TOF4_E2M1_EXP = (
     # exp bias conversion between formats
     (F32_EXP_BIAS - F4_E2M1_EXP_BIAS)
     # mantissa length difference between formats
@@ -64,11 +71,26 @@ DENORM_F32TOF4_EXP = (
     # add one to encoded exponent for denormalized numbers
     + 1
 )
-DENORM_F32TOF4_MASK_INT = DENORM_F32TOF4_EXP << MBITS_F32
+DENORM_F32TOF4_E2M1_MASK_INT = DENORM_F32TOF4_E2M1_EXP << MBITS_F32
 # reinterpret int32 as float32 in Python
 # see https://stackoverflow.com/a/34446112/1058521
-DENORM_F32TOF4_MASK_FLOAT = struct.unpack(
-    "!f", struct.pack("!I", DENORM_F32TOF4_MASK_INT)
+DENORM_F32TOF4_E2M1_MASK_FLOAT = struct.unpack(
+    "!f", struct.pack("!I", DENORM_F32TOF4_E2M1_MASK_INT)
+)[0]
+
+DENORM_F32TOF4_E3M0_EXP = (
+    # exp bias conversion between formats
+    (F32_EXP_BIAS - F4_E3M0_EXP_BIAS)
+    # mantissa length difference between formats
+    + (MBITS_F32 - MBITS_F4_E3M0)
+    # add one to encoded exponent for denormalized numbers
+    + 1
+)
+DENORM_F32TOF4_E3M0_MASK_INT = DENORM_F32TOF4_E3M0_EXP << MBITS_F32
+# reinterpret int32 as float32 in Python
+# see https://stackoverflow.com/a/34446112/1058521
+DENORM_F32TOF4_E3M0_MASK_FLOAT = struct.unpack(
+    "!f", struct.pack("!I", DENORM_F32TOF4_E3M0_MASK_INT)
 )[0]
 
 DENORM_F32TOF6_E2M3_EXP = (
@@ -115,6 +137,7 @@ DENORM_F32TOF6_E3M2_MASK_FLOAT = struct.unpack(
 # 0x7FFFF is 0111 1111 1111 1111 1111, 19 ones, 19 = 23 - 4 = 23 - 3 - 1
 
 MAGIC_ADDER_F4_E2M1 = 0x1FFFFF  # 21 ones
+MAGIC_ADDER_F4_E3M0 = 0x3FFFFF  # 22 ones
 MAGIC_ADDER_F6_E2M3 = 0x7FFFF  # 19 ones
 MAGIC_ADDER_F6_E3M2 = 0xFFFFF  # 20 ones
 
@@ -125,7 +148,8 @@ SIGN_MASK_F4 = 0x8  # 1000
 SIGN_MASK_F6_E2M3 = 0x20  # 100000
 SIGN_MASK_F6_E3M2 = 0x20  # 100000
 
-MANTISSA_MASK_F4 = 0x1  # 0001
+MANTISSA_MASK_F4_E2M1 = 0x1  # 0001
+MANTISSA_MASK_F4_E3M0 = 0x0  # 0000
 MANTISSA_MASK_F6_E2M3 = 0x7  # 000111
 MANTISSA_MASK_F6_E3M2 = 0x3  # 000011
 
@@ -149,7 +173,7 @@ def _f32_to_f4_or_f6_unpacked(
     """
     Input: torch.Tensor of dtype torch.float
     Output: torch.Tensor of dtype torch.uint8,
-      fp4: bits 0-3 empty and bits 4-7 in fp4_e2m1 encoding
+      fp4: bits 0-3 empty and bits 4-7 in fp4_e2m1/fp4_e3m0 encoding
       fp6: bits 0-1 empty and bits 2-7 in the fp6_e2m3 or fp6_e3m2 encoding
 
     Note: there is no special values (NaN, inf) support in this code as the
@@ -233,7 +257,7 @@ def _f32_to_f4_or_f6_unpacked(
     return x.to(torch.uint8)
 
 
-def f32_to_f4_unpacked(x):
+def f32_to_f4_e2m1_unpacked(x):
     """
     Input: torch.Tensor of dtype torch.float
     Output: torch.Tensor of dtype torch.uint8, with bits 0-3 empty and
@@ -243,8 +267,8 @@ def f32_to_f4_unpacked(x):
         x,
         F4_E2M1_MAX,
         F4_E2M1_MIN_NORMAL,
-        DENORM_F32TOF4_MASK_FLOAT,
-        DENORM_F32TOF4_MASK_INT,
+        DENORM_F32TOF4_E2M1_MASK_FLOAT,
+        DENORM_F32TOF4_E2M1_MASK_INT,
         EBITS_F4_E2M1,
         MBITS_F4_E2M1,
         F4_E2M1_EXP_BIAS,
@@ -253,6 +277,25 @@ def f32_to_f4_unpacked(x):
         SIGN_MASK_F4,
     )
 
+def f32_to_f4_e3m0_unpacked(x):
+    """
+    Input: torch.Tensor of dtype torch.float
+    Output: torch.Tensor of dtype torch.uint8, with bits 0-3 empty and
+      bits 4-7 in fp4_e3m0
+    """
+    return _f32_to_f4_or_f6_unpacked(
+        x,
+        F4_E3M0_MAX,
+        F4_E3M0_MIN_NORMAL,
+        DENORM_F32TOF4_E3M0_MASK_FLOAT,
+        DENORM_F32TOF4_E3M0_MASK_INT,
+        EBITS_F4_E3M0,
+        MBITS_F4_E3M0,
+        F4_E3M0_EXP_BIAS,
+        MAGIC_ADDER_F4_E3M0,
+        F4_E3M0_MAX_INT,
+        SIGN_MASK_F4,
+    )
 
 def f32_to_f6_e2m3_unpacked(x):
     """
@@ -307,12 +350,18 @@ def _f4_or_f6_unpacked_to_f32(x: torch.Tensor, lp_dtype_name: str):
     """
     assert x.dtype == torch.uint8
 
-    if lp_dtype_name == DTYPE_FP4:
+    if lp_dtype_name == DTYPE_FP4_E2M1:
         sign_mask = SIGN_MASK_F4
         ebits = EBITS_F4_E2M1
         mbits = MBITS_F4_E2M1
         exp_bias = F4_E2M1_EXP_BIAS
-        mantissa_mask = MANTISSA_MASK_F4
+        mantissa_mask = MANTISSA_MASK_F4_E2M1
+    elif lp_dtype_name == DTYPE_FP4_E3M0:
+        sign_mask = SIGN_MASK_F4
+        ebits = EBITS_F4_E3M0
+        mbits = MBITS_F4_E3M0
+        exp_bias = F4_E3M0_EXP_BIAS
+        mantissa_mask = MANTISSA_MASK_F4_E3M0
     elif lp_dtype_name == DTYPE_FP6_E2M3:
         sign_mask = SIGN_MASK_F6_E2M3
         ebits = EBITS_F6_E2M3
@@ -365,7 +414,7 @@ def _f4_or_f6_unpacked_to_f32(x: torch.Tensor, lp_dtype_name: str):
     # Note: for now the denormal path cast is written for readability and
     # numerical correctness. There is likely a way to optimize the performance,
     # I just haven't had time to look into it.
-    if lp_dtype_name == DTYPE_FP4:
+    if lp_dtype_name == DTYPE_FP4_E2M1 or lp_dtype_name == DTYPE_FP4_E3M0:
         result[denormal_mask] = ZERO_POINT_FIVE_BITS_F32
 
     elif lp_dtype_name == DTYPE_FP6_E2M3:
@@ -411,13 +460,21 @@ def _f4_or_f6_unpacked_to_f32(x: torch.Tensor, lp_dtype_name: str):
     return result.view(torch.float)
 
 
-def f4_unpacked_to_f32(x: torch.Tensor):
+def f4_e2m1_unpacked_to_f32(x: torch.Tensor):
     """
     Input: torch.Tensor of dtype uint8, with bits 0-3 empty and bits 4-7
       containing an fp4_e2m1 encoding
     Output: torch.Tensor of dtype fp32 with the dequantized value
     """
-    return _f4_or_f6_unpacked_to_f32(x, DTYPE_FP4)
+    return _f4_or_f6_unpacked_to_f32(x, DTYPE_FP4_E2M1)
+
+def f4_e3m0_unpacked_to_f32(x: torch.Tensor):
+    """
+    Input: torch.Tensor of dtype uint8, with bits 0-3 empty and bits 4-7
+      containing an fp4_e3m0 encoding
+    Output: torch.Tensor of dtype fp32 with the dequantized value
+    """
+    return _f4_or_f6_unpacked_to_f32(x, DTYPE_FP4_E3M0)
 
 
 def f6_e2m3_unpacked_to_f32(x: torch.Tensor):
