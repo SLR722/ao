@@ -169,6 +169,7 @@ def _f32_to_f4_or_f6_unpacked(
     magic_adder,
     max_int,
     sign_mask,
+    use_stochastic_rounding = False,
 ):
     """
     Input: torch.Tensor of dtype torch.float
@@ -226,13 +227,23 @@ def _f32_to_f4_or_f6_unpacked(
     # branch 3: stay in normal range, adjust the exponent and round
     #
     normal_x = x.view(torch.int32)
-    # resulting mantissa is odd
-    mant_odd = (normal_x >> (MBITS_F32 - mbits)) & 1
-    # update exponent, rounding bias part 1
-    val_to_add = ((exp_bias - F32_EXP_BIAS) << MBITS_F32) + magic_adder
-    normal_x += val_to_add
-    # rounding bias part 2
-    normal_x += mant_odd
+    if use_stochastic_rounding:
+        # generate a 32-bit integer
+        rand_values = torch.randint(low=0, high=2**32-1, size=x.size(), device=x.device)
+        # zero out the leading (1 + 8 + mbits) bits
+        rand_mask = (1 << (MBITS_F32 - mbits)) - 1
+        # add the random bits
+        normal_x += rand_values & rand_mask
+        # update exponent
+        normal_x += ((exp_bias - F32_EXP_BIAS) << MBITS_F32)
+    else:
+        # resulting mantissa is odd
+        mant_odd = (normal_x >> (MBITS_F32 - mbits)) & 1
+        # update exponent, rounding bias part 1
+        val_to_add = ((exp_bias - F32_EXP_BIAS) << MBITS_F32) + magic_adder
+        normal_x += val_to_add
+        # rounding bias part 2
+        normal_x += mant_odd
     # take the bits!
     normal_x = normal_x >> (MBITS_F32 - mbits)
     normal_x = normal_x.to(torch.uint8)
@@ -257,7 +268,7 @@ def _f32_to_f4_or_f6_unpacked(
     return x.to(torch.uint8)
 
 
-def f32_to_f4_e2m1_unpacked(x):
+def f32_to_f4_e2m1_unpacked(x, use_stochastic_rounding=False):
     """
     Input: torch.Tensor of dtype torch.float
     Output: torch.Tensor of dtype torch.uint8, with bits 0-3 empty and
@@ -275,9 +286,10 @@ def f32_to_f4_e2m1_unpacked(x):
         MAGIC_ADDER_F4_E2M1,
         F4_E2M1_MAX_INT,
         SIGN_MASK_F4,
+        use_stochastic_rounding=use_stochastic_rounding,
     )
 
-def f32_to_f4_e3m0_unpacked(x):
+def f32_to_f4_e3m0_unpacked(x, use_stochastic_rounding=False):
     """
     Input: torch.Tensor of dtype torch.float
     Output: torch.Tensor of dtype torch.uint8, with bits 0-3 empty and
@@ -295,9 +307,10 @@ def f32_to_f4_e3m0_unpacked(x):
         MAGIC_ADDER_F4_E3M0,
         F4_E3M0_MAX_INT,
         SIGN_MASK_F4,
+        use_stochastic_rounding=use_stochastic_rounding,
     )
 
-def f32_to_f6_e2m3_unpacked(x):
+def f32_to_f6_e2m3_unpacked(x, use_stochastic_rounding=False):
     """
     Input: torch.Tensor of dtype torch.float
     Output: torch.Tensor of dtype torch.uint8, with bits 0-1 empty and
@@ -315,10 +328,11 @@ def f32_to_f6_e2m3_unpacked(x):
         MAGIC_ADDER_F6_E2M3,
         F6_E2M3_MAX_INT,
         SIGN_MASK_F6_E2M3,
+        use_stochastic_rounding=use_stochastic_rounding,
     )
 
 
-def f32_to_f6_e3m2_unpacked(x):
+def f32_to_f6_e3m2_unpacked(x, use_stochastic_rounding=False):
     """
     Input: torch.Tensor of dtype torch.float
     Output: torch.Tensor of dtype torch.uint8, with bits 0-1 empty and
@@ -336,6 +350,7 @@ def f32_to_f6_e3m2_unpacked(x):
         MAGIC_ADDER_F6_E3M2,
         F6_E3M2_MAX_INT,
         SIGN_MASK_F6_E3M2,
+        use_stochastic_rounding=use_stochastic_rounding,
     )
 
 
