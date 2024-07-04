@@ -218,9 +218,31 @@ def _f32_to_f4_or_f6_unpacked(
     #
     # branch 2: to conversion to denormal as well as rounding up to normal
     #
-    denormal_x = x + denorm_mask_float
-    denormal_x = denormal_x.view(torch.int32)
-    denormal_x -= denorm_mask_int
+    if use_stochastic_rounding:
+        # SR(x) = SR(x + min_normal) - min_normal
+        # adjust the denormal values to normal values
+        denormal_x = x + min_normal
+        # view denormal_x as int32 format
+        denormal_x = denormal_x.view(torch.int32)
+        # generate a 32-bit integer
+        rand_values = torch.randint(low=0, high=2**32-1, size=x.size(), device=x.device)
+        # zero out the leading (1 + 8 + mbits) bits
+        rand_mask = (1 << (MBITS_F32 - mbits)) - 1
+        # add the random bits
+        denormal_x += rand_values & rand_mask
+        # update exponent
+        denormal_x += ((exp_bias - F32_EXP_BIAS) << MBITS_F32)
+        
+        # take the bits!
+        denormal_x = denormal_x >> (MBITS_F32 - mbits)
+        denormal_x = denormal_x.view(torch.float)
+
+        # adjust the denormal values back
+        denormal_x -= min_normal
+    else:
+        denormal_x = x + denorm_mask_float
+        denormal_x = denormal_x.view(torch.int32)
+        denormal_x -= denorm_mask_int
     denormal_x = denormal_x.to(torch.uint8)
 
     #
@@ -228,10 +250,6 @@ def _f32_to_f4_or_f6_unpacked(
     #
     normal_x = x.view(torch.int32)
     if use_stochastic_rounding:
-        # generate a 32-bit integer
-        rand_values = torch.randint(low=0, high=2**32-1, size=x.size(), device=x.device)
-        # zero out the leading (1 + 8 + mbits) bits
-        rand_mask = (1 << (MBITS_F32 - mbits)) - 1
         # add the random bits
         normal_x += rand_values & rand_mask
         # update exponent
